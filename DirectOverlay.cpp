@@ -35,6 +35,9 @@ std::wstring fontname = L"Courier";
 std::mutex mutexEnable;
 BOOL enable = TRUE;
 
+std::mutex mutexEnd;
+BOOL end = TRUE;
+
 DirectOverlayCallback drawLoopCallback = NULL;
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -123,20 +126,20 @@ void mainLoop()
 {
 	if (!overlayWindow)
 		return;
-
+		
 	MSG message;
-	message.message = WM_NULL;
-	ShowWindow(overlayWindow, SW_SHOWNORMAL);
-	UpdateWindow(overlayWindow);
-	SetLayeredWindowAttributes(overlayWindow, RGB(0, 0, 0), 255, LWA_ALPHA);
+	message.message = WM_NULL; 
+	if (PeekMessage(&message, overlayWindow, NULL, NULL, PM_REMOVE))
+	{
+		TranslateMessage(&message);
+		DispatchMessage(&message);
+	}
+	
 	if (message.message != WM_QUIT)
 	{
-		if (PeekMessage(&message, overlayWindow, NULL, NULL, PM_REMOVE))
-		{
-			TranslateMessage(&message);
-			DispatchMessage(&message);
-		}
-
+		ShowWindow(overlayWindow, SW_SHOWNORMAL);
+		UpdateWindow(overlayWindow);
+		SetLayeredWindowAttributes(overlayWindow, RGB(0, 0, 0), 255, LWA_ALPHA);
 		UpdateWindow(overlayWindow);
 
 		if (!targetWindow)
@@ -263,7 +266,11 @@ DWORD WINAPI OverlayThread(LPVOID lpParam)
 	d2oSetup((HWND(*)())lpParam);
 	SetEvent(evOverlayWindowCreate);
 
-	for (; IsDirectOverlayRunning(); ) {
+	while (IsDirectOverlayRunning()) 
+	{
+		std::lock_guard<std::mutex> _locker(mutexEnd);
+		if (end)
+			break;
 		mainLoop();
 	}
 
@@ -272,15 +279,18 @@ DWORD WINAPI OverlayThread(LPVOID lpParam)
 
 void DirectOverlaySetup(DirectOverlayCallback callback) {
 	drawLoopCallback = callback;
+	end = FALSE;
 
 	evOverlayWindowCreate = CreateEvent(NULL, TRUE, FALSE, NULL);
 	CreateThread(0, 0, OverlayThread, NULL, 0, NULL);
 	WaitForSingleObject(evOverlayWindowCreate, INFINITE);
 	CloseHandle(evOverlayWindowCreate);
+
 }
 
 void DirectOverlaySetup(DirectOverlayCallback callback, HWND(*_targetWindow)(void)) {
 	drawLoopCallback = callback;
+	end = FALSE;
 
 	evOverlayWindowCreate = CreateEvent(NULL, TRUE, FALSE, NULL);
 	CreateThread(0, 0, OverlayThread, _targetWindow, 0, NULL);
@@ -290,7 +300,7 @@ void DirectOverlaySetup(DirectOverlayCallback callback, HWND(*_targetWindow)(voi
 
 BOOL IsDirectOverlayRunning()
 {
-	return ::IsWindow(overlayWindow);
+	return !end && ::IsWindow(overlayWindow);
 }
 
 void DirectOverlayEnable(BOOL bEnable)
@@ -308,6 +318,9 @@ void DirectOverlayStop()
 {
 	::DestroyWindow(overlayWindow);
 	overlayWindow = NULL;
+
+	std::lock_guard<std::mutex> _locker(mutexEnd);
+	end = TRUE;
 }
 
 void DirectOverlaySetOption(DWORD option) {
